@@ -46,6 +46,18 @@ def test_note_change_requires_persistence():
     assert [n.midi_note for n in notes] == [69, 71]
 
 
+def test_onset_does_not_split_sustained_same_pitch_note():
+    track = _track([60.0] * 12)
+    onset_times = np.array([0.10, 0.25, 0.40], dtype=np.float32)
+    notes = track_to_notes(
+        track,
+        onset_times=onset_times,
+        min_duration=0.05,
+    )
+    assert len(notes) == 1
+    assert notes[0].midi_note == 60
+
+
 def test_same_pitch_notes_can_remain_separate_with_energy_gap():
     track = _track([60.0, 60.0, 60.0, 60.0, 60.0, 60.0])
     energy_times = np.arange(6, dtype=np.float32) * 0.05
