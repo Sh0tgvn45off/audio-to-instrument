@@ -6,21 +6,69 @@ Windows-first open-source/freemium DAW plugin for converting clean monophonic, s
 
 **v0.1: Monophonic audio to MIDI research prototype**
 
-Initial development is intentionally focused on the analysis engine before the DAW plugin UI.
+The current prototype is a Python analysis engine. It is intentionally being developed and evaluated before moving the stable engine into C++/JUCE/VST3.
 
-## Planned pipeline
+## Current pipeline
 
-Audio → preprocessing → pitch detection → note segmentation → MIDI note conversion → duration/velocity → MIDI export
+Audio
+→ mono loading
+→ silence trimming/normalization
+→ pYIN fundamental-frequency detection
+→ confidence filtering
+→ pitch smoothing
+→ onset detection
+→ note segmentation with change hysteresis
+→ MIDI note conversion
+→ RMS-based velocity estimation
+→ MIDI export
+
+## Supported input concept
+
+The first prototype targets clean monophonic, single-source material such as:
+
+- singing
+- humming
+- whistling
+- single-note guitar
+- trumpet
+- similar melodic instruments
+
+Polyphonic recordings, chords, full mixes, and source separation are outside the initial scope.
+
+## Run the prototype
+
+Create and activate a Python virtual environment, then install dependencies:
+
+    python -m venv .venv
+    .venv\Scripts\activate
+    pip install -r requirements.txt
+
+Convert an audio recording:
+
+    audio-to-midi input.wav output.mid
+
+Useful options:
+
+    audio-to-midi input.wav output.mid --confidence 0.70
+    audio-to-midi input.wav output.mid --min-duration 0.10
+    audio-to-midi input.wav output.mid --no-onsets
+
+The command prints the detected MIDI note, start/end time, and estimated velocity for each note.
 
 ## Development roadmap
 
-- v0.1: Python research prototype
-- v0.2: Accuracy and MIDI improvements
-- v0.3: C++/JUCE VST3 plugin
-- v0.4: FL Studio/local DAW testing
-- v0.5: Basic instrument rendering
-- Later: expression, timbre transformation, and polyphonic/source-separation research
+- **v0.1:** Python monophonic audio-to-MIDI prototype
+- **v0.1.x:** evaluation against real recordings and accuracy improvements
+- **v0.2:** stronger onset/note-boundary handling, pitch-bend/expression research, and better MIDI export
+- **v0.3:** C++/JUCE VST3 plugin
+- **v0.4:** FL Studio and other DAW testing
+- **v0.5:** basic instrument rendering
+- **Later:** timbre transformation, AI-assisted rendering, and polyphonic/source-separation research
 
-## Scope
+## Design principle
 
-The first prototype targets clean monophonic, single-source audio such as vocals, humming, whistling, guitar, trumpet, and similar sources. Polyphonic and mixed-source recordings are outside the initial scope.
+The analysis engine comes first. The eventual plugin should expose the same core pipeline inside a real-time/offline-capable DAW environment without coupling the signal-processing algorithms to the UI.
+
+## License
+
+See `LICENSE`.
