@@ -93,20 +93,23 @@ def track_to_notes(
     active_start: float | None = None
     active_midis: list[float] = []
     pending_midis: list[float] = []
+    pending_start: float | None = None
     last_voiced_time: float | None = None
 
     for time, value, is_voiced in zip(track.times, smoothed, track.voiced):
         time = float(time)
 
-        if onset_index < len(onset_times) and time >= float(onset_times[onset_index]):
-            if active_start is not None and last_voiced_time is not None:
+        while onset_index < len(onset_times) and time >= float(onset_times[onset_index]):
+            onset = float(onset_times[onset_index])
+            if active_start is not None and last_voiced_time is not None and onset > active_start:
                 _finish_note(
-                    notes, active_start, float(onset_times[onset_index]),
+                    notes, active_start, min(onset, last_voiced_time),
                     active_midis, min_duration
                 )
                 active_start = None
                 active_midis = []
                 pending_midis = []
+                pending_start = None
             onset_index += 1
 
         if not is_voiced or not np.isfinite(value):
@@ -119,6 +122,7 @@ def track_to_notes(
                     active_start = None
                     active_midis = []
                     pending_midis = []
+                    pending_start = None
             continue
 
         midi = float(value)
@@ -127,6 +131,7 @@ def track_to_notes(
             active_start = time
             active_midis = [midi]
             pending_midis = []
+            pending_start = None
             last_voiced_time = time
             continue
 
@@ -136,16 +141,22 @@ def track_to_notes(
         if distance_cents <= cents_tolerance:
             active_midis.append(midi)
             pending_midis = []
+            pending_start = None
         else:
+            if not pending_midis:
+                pending_start = time
             pending_midis.append(midi)
+
             if len(pending_midis) >= change_frames:
+                change_start = pending_start if pending_start is not None else time
                 _finish_note(
-                    notes, active_start, last_voiced_time or time,
+                    notes, active_start, change_start,
                     active_midis, min_duration
                 )
-                active_start = time
+                active_start = change_start
                 active_midis = pending_midis.copy()
                 pending_midis = []
+                pending_start = None
 
         last_voiced_time = time
 
