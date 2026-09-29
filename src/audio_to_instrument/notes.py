@@ -50,20 +50,57 @@ def detect_onsets(
     ).astype(np.float32)
 
 
+def detect_energy_regions(
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    frame_length: int = 2048,
+    hop_length: int = 256,
+    top_db: float = 35.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return frame times and an energy-based voiced/silent mask.
+
+    The mask is deliberately separate from pitch tracking. It lets note
+    segmentation preserve short gaps and releases even when pitch remains
+    unchanged.
+    """
+    if len(samples) == 0:
+        return np.array([], dtype=np.float32), np.array([], dtype=bool)
+
+    rms = librosa.feature.rms(
+        y=samples,
+        frame_length=frame_length,
+        hop_length=hop_length,
+        center=True,
+    )[0]
+    times = librosa.frames_to_time(
+        np.arange(len(rms)), sr=sample_rate, hop_length=hop_length
+    )
+
+    peak = float(np.max(rms)) if len(rms) else 0.0
+    if peak <= 0.0:
+        return times.astype(np.float32), np.zeros(len(rms), dtype=bool)
+
+    threshold = peak * (10.0 ** (-top_db / 20.0))
+    return times.astype(np.float32), (rms >= threshold)
+
+
 def track_to_notes(
     track: PitchTrack,
     *,
     onset_times: np.ndarray | None = None,
-    min_duration: float = 0.08,
+    energy_times: np.ndarray | None = None,
+    energy_voiced: np.ndarray | None = None,
+    min_duration: float = 0.05,
     max_gap: float = 0.06,
     cents_tolerance: float = 80.0,
     change_frames: int = 3,
 ) -> list[Note]:
-    """Convert a monophonic pitch track into stable MIDI notes.
+    """Convert a monophonic pitch track into articulation-aware MIDI notes.
 
-    Median smoothing and change hysteresis prevent normal vibrato and small
-    pitch-tracking jitter from becoming many MIDI notes. Optional onset times
-    separate repeated notes at the same pitch.
+    Pitch determines note identity. Pitch changes, detected attacks, and
+    energy gaps determine boundaries. This preserves repeated notes at the
+    same pitch and short staccato gaps instead of merging them automatically.
     """
     if change_frames < 1:
         raise ValueError("change_frames must be at least 1")
@@ -87,7 +124,17 @@ def track_to_notes(
         if onset_times is not None
         else np.array([], dtype=np.float32)
     )
-    onset_index = 0
+
+    energy_times = (
+        np.asarray(energy_times, dtype=np.float32)
+        if energy_times is not None
+        else np.array([], dtype=np.float32)
+    )
+    energy_voiced = (
+        np.asarray(energy_voiced, dtype=bool)
+        if energy_voiced is not None
+        else np.array([], dtype=bool)
+    )
 
     notes: list[Note] = []
     active_start: float | None = None
@@ -95,16 +142,25 @@ def track_to_notes(
     pending_midis: list[float] = []
     pending_start: float | None = None
     last_voiced_time: float | None = None
+    previous_time: float | None = None
+    onset_index = 0
 
     for time, value, is_voiced in zip(track.times, smoothed, track.voiced):
         time = float(time)
 
-        while onset_index < len(onset_times) and time >= float(onset_times[onset_index]):
+        while onset_index < len(onset_times) and float(onset_times[onset_index]) <= time:
             onset = float(onset_times[onset_index])
-            if active_start is not None and last_voiced_time is not None and onset > active_start:
+            if (
+                active_start is not None
+                and last_voiced_time is not None
+                and onset > active_start + min_duration
+            ):
                 _finish_note(
-                    notes, active_start, min(onset, last_voiced_time),
-                    active_midis, min_duration
+                    notes,
+                    active_start,
+                    min(onset, last_voiced_time),
+                    active_midis,
+                    min_duration,
                 )
                 active_start = None
                 active_midis = []
@@ -112,17 +168,32 @@ def track_to_notes(
                 pending_start = None
             onset_index += 1
 
-        if not is_voiced or not np.isfinite(value):
+        energy_active = _energy_is_active(
+            time, energy_times, energy_voiced
+        )
+
+        if (
+            not is_voiced
+            or not np.isfinite(value)
+            or (len(energy_times) and not energy_active)
+        ):
             if active_start is not None and last_voiced_time is not None:
-                if time - last_voiced_time > max_gap:
+                gap = time - last_voiced_time
+                if gap > max_gap or (
+                    len(energy_times) and not energy_active and gap > 0.02
+                ):
                     _finish_note(
-                        notes, active_start, last_voiced_time,
-                        active_midis, min_duration
+                        notes,
+                        active_start,
+                        last_voiced_time,
+                        active_midis,
+                        min_duration,
                     )
                     active_start = None
                     active_midis = []
                     pending_midis = []
                     pending_start = None
+            previous_time = time
             continue
 
         midi = float(value)
@@ -133,6 +204,7 @@ def track_to_notes(
             pending_midis = []
             pending_start = None
             last_voiced_time = time
+            previous_time = time
             continue
 
         current_note = int(np.rint(np.median(active_midis)))
@@ -148,10 +220,15 @@ def track_to_notes(
             pending_midis.append(midi)
 
             if len(pending_midis) >= change_frames:
-                change_start = pending_start if pending_start is not None else time
+                change_start = (
+                    pending_start if pending_start is not None else time
+                )
                 _finish_note(
-                    notes, active_start, change_start,
-                    active_midis, min_duration
+                    notes,
+                    active_start,
+                    change_start,
+                    active_midis,
+                    min_duration,
                 )
                 active_start = change_start
                 active_midis = pending_midis.copy()
@@ -159,14 +236,18 @@ def track_to_notes(
                 pending_start = None
 
         last_voiced_time = time
+        previous_time = time
 
     if active_start is not None and last_voiced_time is not None:
         _finish_note(
-            notes, active_start, last_voiced_time,
-            active_midis, min_duration
+            notes,
+            active_start,
+            last_voiced_time,
+            active_midis,
+            min_duration,
         )
 
-    return _merge_adjacent_same_pitch(notes)
+    return notes
 
 
 def assign_velocities(
@@ -212,6 +293,18 @@ def assign_velocities(
     ]
 
 
+def _energy_is_active(
+    time: float,
+    energy_times: np.ndarray,
+    energy_voiced: np.ndarray,
+) -> bool:
+    if len(energy_times) == 0 or len(energy_voiced) == 0:
+        return True
+    index = int(np.searchsorted(energy_times, time, side="right") - 1)
+    index = max(0, min(index, len(energy_voiced) - 1))
+    return bool(energy_voiced[index])
+
+
 def _median_smooth(values: np.ndarray, window: int = 5) -> np.ndarray:
     """Median-smooth finite pitch values while preserving unvoiced gaps."""
     result = values.copy()
@@ -239,22 +332,3 @@ def _finish_note(
         return
     midi_note = int(np.clip(np.rint(np.median(midis)), 0, 127))
     notes.append(Note(midi_note=midi_note, start=start, end=end))
-
-
-def _merge_adjacent_same_pitch(notes: list[Note]) -> list[Note]:
-    if not notes:
-        return []
-
-    merged = [notes[0]]
-    for note in notes[1:]:
-        previous = merged[-1]
-        if note.midi_note == previous.midi_note and note.start <= previous.end + 0.02:
-            merged[-1] = Note(
-                midi_note=previous.midi_note,
-                start=previous.start,
-                end=max(previous.end, note.end),
-                velocity=max(previous.velocity, note.velocity),
-            )
-        else:
-            merged.append(note)
-    return merged
