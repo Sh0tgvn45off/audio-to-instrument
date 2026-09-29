@@ -119,6 +119,9 @@ def track_to_notes(
     )
     smoothed = _median_smooth(raw_midi, window=5)
 
+    # Kept in the API for compatibility and future attack-time refinement.
+    # Current segmentation deliberately does not force boundaries at every
+    # onset because onset detectors can fire inside sustained notes.
     onset_times = (
         np.asarray(onset_times, dtype=np.float32)
         if onset_times is not None
@@ -143,31 +146,13 @@ def track_to_notes(
     pending_start: float | None = None
     last_voiced_time: float | None = None
     previous_time: float | None = None
-    onset_index = 0
-
     for time, value, is_voiced in zip(track.times, smoothed, track.voiced):
         time = float(time)
 
-        while onset_index < len(onset_times) and float(onset_times[onset_index]) <= time:
-            onset = float(onset_times[onset_index])
-            if (
-                active_start is not None
-                and last_voiced_time is not None
-                and onset > active_start + min_duration
-            ):
-                _finish_note(
-                    notes,
-                    active_start,
-                    min(onset, last_voiced_time),
-                    active_midis,
-                    min_duration,
-                )
-                active_start = None
-                active_midis = []
-                pending_midis = []
-                pending_start = None
-            onset_index += 1
-
+        # Onsets are evidence of an attack, not automatic note boundaries.
+        # A sustained note can contain transient peaks, consonants, or vibrato
+        # that trigger onset detection. Only an actual energy/pitch gap closes
+        # the current note, preventing sustained notes from being fragmented.
         energy_active = _energy_is_active(
             time, energy_times, energy_voiced
         )
