@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
+import mido
 
+from audio_to_instrument.midi import export_midi
 from audio_to_instrument.notes import (
     Note,
     assign_velocities,
@@ -41,7 +43,9 @@ def test_pitch_jitter_does_not_create_extra_notes():
 
 
 def test_note_change_requires_persistence():
-    track = _track([69.0, 69.0, 71.0, 69.0, 69.0, 69.0, 71.0, 71.0, 71.0])
+    track = _track(
+        [69.0, 69.0, 71.0, 69.0, 69.0, 69.0, 71.0, 71.0, 71.0]
+    )
     notes = track_to_notes(track, min_duration=0.05, change_frames=3)
     assert [n.midi_note for n in notes] == [69, 71]
 
@@ -74,7 +78,7 @@ def test_same_pitch_notes_can_remain_separate_with_energy_gap():
     assert notes[1].start > notes[0].end
 
 
-def test_velocity_is_relative_to_note_amplitude():
+def test_velocity_is_relative_to_attack_amplitude():
     samples = np.concatenate(
         [
             np.ones(1000, dtype=np.float32) * 0.2,
@@ -85,5 +89,36 @@ def test_velocity_is_relative_to_note_amplitude():
         Note(60, 0.0, 0.05),
         Note(62, 0.05, 0.10),
     ]
-    result = assign_velocities(notes, samples, 20000)
+    result = assign_velocities(
+        notes,
+        samples,
+        20000,
+        attack_window=0.03,
+    )
     assert result[1].velocity > result[0].velocity
+
+
+def test_midi_uses_note_velocity_and_closes_before_new_pitch():
+    notes = [
+        Note(60, 0.0, 0.5, velocity=70),
+        Note(64, 0.5, 1.0, velocity=110),
+    ]
+    output = "test_velocity_and_order.mid"
+    export_midi(notes, output)
+
+    midi = mido.MidiFile(output)
+    messages = [
+        message
+        for track in midi.tracks
+        for message in track
+        if message.type in {"note_on", "note_off"}
+    ]
+
+    assert messages[0].type == "note_on"
+    assert messages[0].note == 60
+    assert messages[0].velocity == 70
+    assert messages[1].type == "note_off"
+    assert messages[1].note == 60
+    assert messages[2].type == "note_on"
+    assert messages[2].note == 64
+    assert messages[2].velocity == 110
