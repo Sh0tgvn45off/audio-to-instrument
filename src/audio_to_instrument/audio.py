@@ -21,14 +21,29 @@ def load_audio(path: str, target_sr: int | None = 22050) -> AudioData:
     return AudioData(samples=samples, sample_rate=sample_rate)
 
 
-def preprocess(samples: np.ndarray, trim_db: float = 40.0) -> np.ndarray:
-    """Trim leading/trailing silence and normalize safely."""
+def preprocess(
+    samples: np.ndarray,
+    *,
+    trim_db: float | None = None,
+) -> np.ndarray:
+    """Normalize audio without changing its timeline.
+
+    By default the sample count is preserved. This is important for
+    transcription because removing leading silence would otherwise shift
+    every detected MIDI timestamp relative to the original recording.
+
+    Optional trimming is retained for offline experiments, but callers that
+    need MIDI aligned to the source recording should leave trim_db as None.
+    """
     samples = np.asarray(samples, dtype=np.float32)
     if samples.size == 0:
         return samples
 
-    trimmed, _ = librosa.effects.trim(samples, top_db=trim_db)
-    peak = float(np.max(np.abs(trimmed))) if trimmed.size else 0.0
+    processed = samples
+    if trim_db is not None:
+        processed, _ = librosa.effects.trim(processed, top_db=trim_db)
+
+    peak = float(np.max(np.abs(processed))) if processed.size else 0.0
     if peak > 0:
-        trimmed = trimmed / peak
-    return trimmed.astype(np.float32, copy=False)
+        processed = processed / peak
+    return processed.astype(np.float32, copy=False)
