@@ -62,6 +62,18 @@ def main() -> None:
         help="Consecutive low-energy frames required before release evidence is considered (default: 3)",
     )
     parser.add_argument(
+        "--transition-max-duration",
+        type=float,
+        default=0.10,
+        help="Maximum duration of a short intermediate pitch region that may be treated as a legato transition (default: 0.10)",
+    )
+    parser.add_argument(
+        "--transition-min-neighbor-duration",
+        type=float,
+        default=0.10,
+        help="Minimum duration required for neighboring notes before a short transition region can be collapsed (default: 0.10)",
+    )
+    parser.add_argument(
         "--report",
         help="Optional CSV path for detailed note timing/velocity output",
     )
@@ -86,6 +98,8 @@ def main() -> None:
         articulation_features=articulation,
         min_duration=args.min_duration,
         energy_release_frames=args.energy_release_frames,
+        transition_max_duration=args.transition_max_duration,
+        transition_min_neighbor_duration=args.transition_min_neighbor_duration,
     )
     notes = assign_velocities(notes, samples, audio.sample_rate)
 
