@@ -82,7 +82,7 @@ def detect_energy_regions(
         return times.astype(np.float32), np.zeros(len(rms), dtype=bool)
 
     threshold = peak * (10.0 ** (-top_db / 20.0))
-    return times.astype(np.float32), (rms >= threshold)
+    return times.astype(np.float32), rms >= threshold
 
 
 def track_to_notes(
@@ -98,9 +98,13 @@ def track_to_notes(
 ) -> list[Note]:
     """Convert a monophonic pitch track into articulation-aware MIDI notes.
 
-    Pitch determines note identity. Pitch changes, detected attacks, and
-    energy gaps determine boundaries. This preserves repeated notes at the
-    same pitch and short staccato gaps instead of merging them automatically.
+    Pitch determines note identity. Persistent pitch changes determine
+    boundaries between different notes. Energy gaps determine note-off events
+    for repeated notes at the same pitch.
+
+    Onset detection is intentionally not used as a hard boundary because
+    onset detectors can fire inside sustained notes due to consonants,
+    harmonics, vibrato, or other transients.
     """
     if change_frames < 1:
         raise ValueError("change_frames must be at least 1")
@@ -112,21 +116,18 @@ def track_to_notes(
 
     raw_midi = np.array(
         [
-            hz_to_midi(float(f)) if v else np.nan
-            for f, v in zip(track.frequencies_hz, track.voiced)
+            hz_to_midi(float(frequency)) if voiced else np.nan
+            for frequency, voiced in zip(
+                track.frequencies_hz, track.voiced
+            )
         ],
         dtype=np.float32,
     )
     smoothed = _median_smooth(raw_midi, window=5)
 
-    # Kept in the API for compatibility and future attack-time refinement.
-    # Current segmentation deliberately does not force boundaries at every
-    # onset because onset detectors can fire inside sustained notes.
-    onset_times = (
-        np.asarray(onset_times, dtype=np.float32)
-        if onset_times is not None
-        else np.array([], dtype=np.float32)
-    )
+    # Onsets remain available for future attack-time refinement. They are not
+    # boundaries by themselves because that caused severe over-segmentation.
+    _ = onset_times
 
     energy_times = (
         np.asarray(energy_times, dtype=np.float32)
@@ -145,14 +146,11 @@ def track_to_notes(
     pending_midis: list[float] = []
     pending_start: float | None = None
     last_voiced_time: float | None = None
-    previous_time: float | None = None
-    for time, value, is_voiced in zip(track.times, smoothed, track.voiced):
-        time = float(time)
 
-        # Onsets are evidence of an attack, not automatic note boundaries.
-        # A sustained note can contain transient peaks, consonants, or vibrato
-        # that trigger onset detection. Only an actual energy/pitch gap closes
-        # the current note, preventing sustained notes from being fragmented.
+    for time, value, is_voiced in zip(
+        track.times, smoothed, track.voiced
+    ):
+        time = float(time)
         energy_active = _energy_is_active(
             time, energy_times, energy_voiced
         )
@@ -167,10 +165,15 @@ def track_to_notes(
                 if gap > max_gap or (
                     len(energy_times) and not energy_active and gap > 0.02
                 ):
+                    end = (
+                        (last_voiced_time + time) / 2.0
+                        if not energy_active
+                        else last_voiced_time
+                    )
                     _finish_note(
                         notes,
                         active_start,
-                        last_voiced_time,
+                        end,
                         active_midis,
                         min_duration,
                     )
@@ -178,7 +181,6 @@ def track_to_notes(
                     active_midis = []
                     pending_midis = []
                     pending_start = None
-            previous_time = time
             continue
 
         midi = float(value)
@@ -189,7 +191,6 @@ def track_to_notes(
             pending_midis = []
             pending_start = None
             last_voiced_time = time
-            previous_time = time
             continue
 
         current_note = int(np.rint(np.median(active_midis)))
@@ -221,7 +222,6 @@ def track_to_notes(
                 pending_start = None
 
         last_voiced_time = time
-        previous_time = time
 
     if active_start is not None and last_voiced_time is not None:
         _finish_note(
@@ -242,19 +242,38 @@ def assign_velocities(
     *,
     minimum: int = 40,
     maximum: int = 127,
+    attack_window: float = 0.08,
 ) -> list[Note]:
-    """Assign relative MIDI velocities from each note's RMS amplitude."""
+    """Assign MIDI velocity from the RMS level near each note attack.
+
+    MIDI velocity represents attack intensity more closely than average note
+    loudness, so a short leading window is used instead of the whole note.
+    """
     if not notes or len(samples) == 0:
         return notes
     if minimum < 1 or maximum > 127 or minimum > maximum:
         raise ValueError("velocity range must be within 1..127")
+    if attack_window <= 0:
+        raise ValueError("attack_window must be positive")
 
     rms_values: list[float] = []
     for note in notes:
         start = max(0, int(note.start * sample_rate))
-        end = min(len(samples), max(start + 1, int(note.end * sample_rate)))
+        attack_end = min(
+            len(samples),
+            max(start + 1, int((note.start + attack_window) * sample_rate)),
+        )
+        end = min(
+            len(samples),
+            max(start + 1, int(note.end * sample_rate)),
+        )
+        end = min(end, attack_end)
         segment = samples[start:end]
-        rms = float(np.sqrt(np.mean(np.square(segment)))) if len(segment) else 0.0
+        rms = (
+            float(np.sqrt(np.mean(np.square(segment))))
+            if len(segment)
+            else 0.0
+        )
         rms_values.append(rms)
 
     peak = max(rms_values, default=0.0)
