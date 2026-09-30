@@ -394,24 +394,24 @@ def _consolidate_pitch_transitions(
     min_neighbor_duration: float,
     release_db: float,
 ) -> list[Note]:
-    """Remove short legato transition regions mistaken for musical notes.
+    """Collapse short intermediate pitch regions that behave like legato
+    transitions rather than independently articulated musical notes.
 
-    Singing F0 often passes through intermediate pitches during a transition.
-    Research on singing transcription treats these regions as transitions
-    rather than independent notes, using pitch-trajectory stability and
-    explicit transition modeling. We therefore suppress a short middle note
-    when its pitch lies between two stable neighboring notes and there is no
-    release evidence at either boundary.
+    A candidate middle note is removed only when:
+    - it is short,
+    - both neighboring notes are sufficiently stable,
+    - its pitch lies strictly between the neighboring pitches, and
+    - there is no release evidence at either side of the candidate.
 
-    Energy/release evidence is deliberately required to be absent before a
-    transition is collapsed. This protects genuine short articulated notes.
+    The surrounding notes are then joined at the original transition
+    boundaries, so removing a transition cannot create an artificial gap.
     """
     if len(notes) < 3 or len(features.times) == 0:
         return notes
 
     result = list(notes)
-    changed = True
 
+    changed = True
     while changed and len(result) >= 3:
         changed = False
 
@@ -431,28 +431,37 @@ def _consolidate_pitch_transitions(
             middle_pitch = middle.midi_note
             following_pitch = following.midi_note
 
-            # The short region must sit between the neighboring pitches.
             if previous_pitch == following_pitch:
                 continue
+
             low = min(previous_pitch, following_pitch)
             high = max(previous_pitch, following_pitch)
             if not low < middle_pitch < high:
                 continue
 
-            # A genuine articulation/release is evidence for a real note
-            # boundary, so do not collapse this candidate.
-            # Only inspect the actual transition interval. A release that
-            # occurs well before the transition can belong to the preceding
-            # note and must not classify an otherwise legato pitch transition.
+            boundary_window = min(
+                max_duration,
+                max(features.times[1] - features.times[0], 0.01)
+                if len(features.times) > 1
+                else 0.01,
+            )
+
             if _has_release_in_interval(
-                middle.start,
-                middle.end,
+                middle.start - boundary_window,
+                middle.start + boundary_window,
                 features,
                 release_db=release_db,
             ):
                 continue
 
-            # Removing the transition region must not manufacture a gap.
+            if _has_release_in_interval(
+                middle.end - boundary_window,
+                middle.end + boundary_window,
+                features,
+                release_db=release_db,
+            ):
+                continue
+
             result[index - 1] = Note(
                 midi_note=previous.midi_note,
                 start=previous.start,
@@ -465,13 +474,12 @@ def _consolidate_pitch_transitions(
                 end=following.end,
                 velocity=following.velocity,
             )
+
             del result[index]
             changed = True
             break
 
     return result
-
-
 def _has_release_in_interval(
     start: float,
     end: float,
