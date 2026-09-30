@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import librosa
 import numpy as np
 
+from .articulation import ArticulationFeatures, sample_articulation_features
 from .pitch import PitchTrack
 
 
@@ -50,44 +51,122 @@ def detect_onsets(
     ).astype(np.float32)
 
 
+def detect_energy_regions(
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    frame_length: int = 2048,
+    hop_length: int = 256,
+    top_db: float = 35.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return frame times and an energy-based voiced/silent mask.
+
+    The mask is deliberately separate from pitch tracking. It lets note
+    segmentation preserve short gaps and releases even when pitch remains
+    unchanged.
+    """
+    if len(samples) == 0:
+        return np.array([], dtype=np.float32), np.array([], dtype=bool)
+
+    rms = librosa.feature.rms(
+        y=samples,
+        frame_length=frame_length,
+        hop_length=hop_length,
+        center=True,
+    )[0]
+    times = librosa.frames_to_time(
+        np.arange(len(rms)), sr=sample_rate, hop_length=hop_length
+    )
+
+    peak = float(np.max(rms)) if len(rms) else 0.0
+    if peak <= 0.0:
+        return times.astype(np.float32), np.zeros(len(rms), dtype=bool)
+
+    threshold = peak * (10.0 ** (-top_db / 20.0))
+    return times.astype(np.float32), rms >= threshold
+
+
 def track_to_notes(
     track: PitchTrack,
     *,
     onset_times: np.ndarray | None = None,
-    min_duration: float = 0.08,
+    energy_times: np.ndarray | None = None,
+    energy_voiced: np.ndarray | None = None,
+    min_duration: float = 0.05,
     max_gap: float = 0.06,
     cents_tolerance: float = 80.0,
     change_frames: int = 3,
+    energy_release_frames: int = 3,
+    articulation_features: ArticulationFeatures | None = None,
+    release_db: float = -50.0,
+    hard_release_db: float = -60.0,
+    release_confidence: float = 0.45,
+    hard_release_frames: int = 3,
+    transition_max_duration: float = 0.10,
+    transition_min_neighbor_duration: float = 0.10,
 ) -> list[Note]:
-    """Convert a monophonic pitch track into stable MIDI notes.
+    """Convert a monophonic pitch track into articulation-aware MIDI notes.
 
-    Median smoothing and change hysteresis prevent normal vibrato and small
-    pitch-tracking jitter from becoming many MIDI notes. Optional onset times
-    separate repeated notes at the same pitch.
+    Pitch determines note identity. Persistent pitch changes determine
+    boundaries between different notes. With articulation features supplied,
+    RMS level, pYIN confidence, and spectral-flux onset evidence jointly
+    determine whether a release is real. A short energy dip is not enough to
+    end a note.
+
+    The legacy energy-mask path remains available for deterministic tests and
+    backwards compatibility. Production callers should provide
+    ``articulation_features`` so energy is treated as evidence rather than a
+    hard voiced/silent switch.
+
+    Onset detection is supporting evidence only. It is never a hard boundary
+    because singing onsets can be soft and spectral transients can occur
+    inside sustained notes.
     """
     if change_frames < 1:
         raise ValueError("change_frames must be at least 1")
     if min_duration < 0:
         raise ValueError("min_duration cannot be negative")
+    if energy_release_frames < 1:
+        raise ValueError("energy_release_frames must be at least 1")
+    if hard_release_frames < 1:
+        raise ValueError("hard_release_frames must be at least 1")
+    if release_confidence < 0.0 or release_confidence > 1.0:
+        raise ValueError("release_confidence must be between 0 and 1")
+    if hard_release_db > release_db:
+        raise ValueError("hard_release_db must be at or below release_db")
+    if transition_max_duration <= 0:
+        raise ValueError("transition_max_duration must be positive")
+    if transition_min_neighbor_duration < 0:
+        raise ValueError("transition_min_neighbor_duration cannot be negative")
 
     if len(track.times) == 0:
         return []
 
     raw_midi = np.array(
         [
-            hz_to_midi(float(f)) if v else np.nan
-            for f, v in zip(track.frequencies_hz, track.voiced)
+            hz_to_midi(float(frequency)) if voiced else np.nan
+            for frequency, voiced in zip(
+                track.frequencies_hz, track.voiced
+            )
         ],
         dtype=np.float32,
     )
     smoothed = _median_smooth(raw_midi, window=5)
 
-    onset_times = (
-        np.asarray(onset_times, dtype=np.float32)
-        if onset_times is not None
+    # Onsets remain available for future attack-time refinement. They are not
+    # boundaries by themselves because that caused severe over-segmentation.
+    _ = onset_times
+
+    energy_times = (
+        np.asarray(energy_times, dtype=np.float32)
+        if energy_times is not None
         else np.array([], dtype=np.float32)
     )
-    onset_index = 0
+    energy_voiced = (
+        np.asarray(energy_voiced, dtype=bool)
+        if energy_voiced is not None
+        else np.array([], dtype=bool)
+    )
 
     notes: list[Note] = []
     active_start: float | None = None
@@ -95,35 +174,156 @@ def track_to_notes(
     pending_midis: list[float] = []
     pending_start: float | None = None
     last_voiced_time: float | None = None
+    inactive_energy_frames = 0
+    hard_inactive_frames = 0
+    first_inactive_energy_time: float | None = None
 
-    for time, value, is_voiced in zip(track.times, smoothed, track.voiced):
+    use_articulation = articulation_features is not None
+
+    for time, value, is_voiced, confidence in zip(
+        track.times, smoothed, track.voiced, track.confidence
+    ):
         time = float(time)
+        confidence = float(confidence)
 
-        while onset_index < len(onset_times) and time >= float(onset_times[onset_index]):
-            onset = float(onset_times[onset_index])
-            if active_start is not None and last_voiced_time is not None and onset > active_start:
-                _finish_note(
-                    notes, active_start, min(onset, last_voiced_time),
-                    active_midis, min_duration
-                )
-                active_start = None
-                active_midis = []
-                pending_midis = []
-                pending_start = None
-            onset_index += 1
+        if use_articulation:
+            rms_db, onset_strength = sample_articulation_features(
+                time, articulation_features
+            )
+            low_energy = rms_db <= release_db
+            hard_silence = rms_db <= hard_release_db
+            energy_active = not low_energy
+        else:
+            onset_strength = 0.0
+            energy_active = _energy_is_active(
+                time, energy_times, energy_voiced
+            )
+            low_energy = not energy_active
+            hard_silence = not energy_active
 
         if not is_voiced or not np.isfinite(value):
             if active_start is not None and last_voiced_time is not None:
-                if time - last_voiced_time > max_gap:
+                gap = time - last_voiced_time
+                if low_energy:
+                    inactive_energy_frames += 1
+                    hard_inactive_frames += 1 if hard_silence else 0
+                    if first_inactive_energy_time is None:
+                        first_inactive_energy_time = time
+                else:
+                    inactive_energy_frames = 0
+                    hard_inactive_frames = 0
+                    first_inactive_energy_time = None
+
+                release_confirmed = (
+                    inactive_energy_frames >= energy_release_frames
+                    and (
+                        confidence <= release_confidence
+                        or hard_inactive_frames >= hard_release_frames
+                    )
+                )
+
+                if gap > max_gap or release_confirmed:
+                    end = (
+                        first_inactive_energy_time
+                        if release_confirmed
+                        and first_inactive_energy_time is not None
+                        else (
+                            (last_voiced_time + time) / 2.0
+                            if low_energy
+                            else last_voiced_time
+                        )
+                    )
                     _finish_note(
-                        notes, active_start, last_voiced_time,
-                        active_midis, min_duration
+                        notes,
+                        active_start,
+                        end,
+                        active_midis,
+                        min_duration,
                     )
                     active_start = None
                     active_midis = []
                     pending_midis = []
                     pending_start = None
+                    inactive_energy_frames = 0
+                    hard_inactive_frames = 0
+                    first_inactive_energy_time = None
             continue
+
+        if use_articulation:
+            if low_energy:
+                inactive_energy_frames += 1
+                hard_inactive_frames += 1 if hard_silence else 0
+                if first_inactive_energy_time is None:
+                    first_inactive_energy_time = time
+
+                # A strong recovery/attack while confidence remains healthy
+                # cancels a possible release. This protects sustained humming
+                # from short envelope dips and transient spectral changes.
+                if onset_strength >= 0.5 and confidence > release_confidence:
+                    inactive_energy_frames = 0
+                    hard_inactive_frames = 0
+                    first_inactive_energy_time = None
+                else:
+                    release_confirmed = (
+                        inactive_energy_frames >= energy_release_frames
+                        and (
+                            confidence <= release_confidence
+                            or hard_inactive_frames >= hard_release_frames
+                        )
+                    )
+                    if release_confirmed and active_start is not None:
+                        end = (
+                            first_inactive_energy_time
+                            if first_inactive_energy_time is not None
+                            else time
+                        )
+                        _finish_note(
+                            notes,
+                            active_start,
+                            end,
+                            active_midis,
+                            min_duration,
+                        )
+                        active_start = None
+                        active_midis = []
+                        pending_midis = []
+                        pending_start = None
+                        inactive_energy_frames = 0
+                        hard_inactive_frames = 0
+                        first_inactive_energy_time = None
+                        last_voiced_time = None
+                        continue
+            else:
+                inactive_energy_frames = 0
+                hard_inactive_frames = 0
+                first_inactive_energy_time = None
+        else:
+            if not energy_active:
+                inactive_energy_frames += 1
+                if first_inactive_energy_time is None:
+                    first_inactive_energy_time = time
+                if inactive_energy_frames < energy_release_frames:
+                    continue
+
+                if active_start is not None:
+                    _finish_note(
+                        notes,
+                        active_start,
+                        first_inactive_energy_time,
+                        active_midis,
+                        min_duration,
+                    )
+                    active_start = None
+                    active_midis = []
+                    pending_midis = []
+                    pending_start = None
+                    inactive_energy_frames = 0
+                    first_inactive_energy_time = None
+                    last_voiced_time = None
+                    continue
+            else:
+                inactive_energy_frames = 0
+                first_inactive_energy_time = None
 
         midi = float(value)
 
@@ -148,10 +348,15 @@ def track_to_notes(
             pending_midis.append(midi)
 
             if len(pending_midis) >= change_frames:
-                change_start = pending_start if pending_start is not None else time
+                change_start = (
+                    pending_start if pending_start is not None else time
+                )
                 _finish_note(
-                    notes, active_start, change_start,
-                    active_midis, min_duration
+                    notes,
+                    active_start,
+                    change_start,
+                    active_midis,
+                    min_duration,
                 )
                 active_start = change_start
                 active_midis = pending_midis.copy()
@@ -162,11 +367,27 @@ def track_to_notes(
 
     if active_start is not None and last_voiced_time is not None:
         _finish_note(
-            notes, active_start, last_voiced_time,
-            active_midis, min_duration
+            notes,
+            active_start,
+            last_voiced_time,
+            active_midis,
+            min_duration,
         )
 
-    return _merge_adjacent_same_pitch(notes)
+    if use_articulation:
+        # Keep transition consolidation in its own module so the segmentation
+        # logic and post-processing logic can be tested independently.
+        from .transitions import consolidate_pitch_transitions
+
+        notes = consolidate_pitch_transitions(
+            notes,
+            articulation_features,
+            max_duration=transition_max_duration,
+            min_neighbor_duration=transition_min_neighbor_duration,
+            release_db=release_db,
+        )
+
+    return notes
 
 
 def assign_velocities(
@@ -176,19 +397,38 @@ def assign_velocities(
     *,
     minimum: int = 40,
     maximum: int = 127,
+    attack_window: float = 0.08,
 ) -> list[Note]:
-    """Assign relative MIDI velocities from each note's RMS amplitude."""
+    """Assign MIDI velocity from the RMS level near each note attack.
+
+    MIDI velocity represents attack intensity more closely than average note
+    loudness, so a short leading window is used instead of the whole note.
+    """
     if not notes or len(samples) == 0:
         return notes
     if minimum < 1 or maximum > 127 or minimum > maximum:
         raise ValueError("velocity range must be within 1..127")
+    if attack_window <= 0:
+        raise ValueError("attack_window must be positive")
 
     rms_values: list[float] = []
     for note in notes:
         start = max(0, int(note.start * sample_rate))
-        end = min(len(samples), max(start + 1, int(note.end * sample_rate)))
+        attack_end = min(
+            len(samples),
+            max(start + 1, int((note.start + attack_window) * sample_rate)),
+        )
+        end = min(
+            len(samples),
+            max(start + 1, int(note.end * sample_rate)),
+        )
+        end = min(end, attack_end)
         segment = samples[start:end]
-        rms = float(np.sqrt(np.mean(np.square(segment)))) if len(segment) else 0.0
+        rms = (
+            float(np.sqrt(np.mean(np.square(segment))))
+            if len(segment)
+            else 0.0
+        )
         rms_values.append(rms)
 
     peak = max(rms_values, default=0.0)
@@ -210,6 +450,18 @@ def assign_velocities(
         )
         for note, rms in zip(notes, rms_values)
     ]
+
+
+def _energy_is_active(
+    time: float,
+    energy_times: np.ndarray,
+    energy_voiced: np.ndarray,
+) -> bool:
+    if len(energy_times) == 0 or len(energy_voiced) == 0:
+        return True
+    index = int(np.searchsorted(energy_times, time, side="right") - 1)
+    index = max(0, min(index, len(energy_voiced) - 1))
+    return bool(energy_voiced[index])
 
 
 def _median_smooth(values: np.ndarray, window: int = 5) -> np.ndarray:
@@ -235,26 +487,13 @@ def _finish_note(
     midis: list[float],
     min_duration: float,
 ) -> None:
-    if end - start < min_duration or not midis:
+    # Floating-point frame timestamps can make an intended duration such as
+    # 0.02 seconds evaluate slightly below the configured minimum. Treat a
+    # tiny numerical error as equal to the minimum so short real notes are not
+    # silently discarded before articulation post-processing can inspect them.
+    duration = end - start
+    epsilon = 1e-6
+    if duration + epsilon < min_duration or not midis:
         return
     midi_note = int(np.clip(np.rint(np.median(midis)), 0, 127))
     notes.append(Note(midi_note=midi_note, start=start, end=end))
-
-
-def _merge_adjacent_same_pitch(notes: list[Note]) -> list[Note]:
-    if not notes:
-        return []
-
-    merged = [notes[0]]
-    for note in notes[1:]:
-        previous = merged[-1]
-        if note.midi_note == previous.midi_note and note.start <= previous.end + 0.02:
-            merged[-1] = Note(
-                midi_note=previous.midi_note,
-                start=previous.start,
-                end=max(previous.end, note.end),
-                velocity=max(previous.velocity, note.velocity),
-            )
-        else:
-            merged.append(note)
-    return merged
