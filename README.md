@@ -6,6 +6,8 @@ Windows-first open-source/freemium DAW plugin for converting clean monophonic, s
 
 **v0.1.x: Monophonic audio to MIDI research prototype**
 
+**Current milestone: `v0.1.3` | Phase: Articulation Hysteresis & Release Detection**
+
 The current prototype is a Python analysis engine. It is intentionally being developed and evaluated before moving the stable engine into C++/JUCE/VST3.
 
 The current priority is **transcription quality**, especially note boundaries and articulation. UI work is deferred until the analysis engine is reliable enough to validate in a DAW.
@@ -18,6 +20,8 @@ Audio
 → pYIN fundamental-frequency detection
 → confidence filtering
 → pitch smoothing
+→ local energy envelope
+→ release hysteresis
 → energy-aware note segmentation
 → persistent pitch-change detection
 → MIDI note conversion
@@ -62,6 +66,7 @@ The command prints detected MIDI note, start/end time, duration, and estimated v
 ## Development roadmap
 
 - **v0.1:** Python monophonic audio-to-MIDI prototype
+- **v0.1.3 | Phase: Articulation Hysteresis & Release Detection:** separate attack evidence from release confirmation, prevent short energy dips from fragmenting sustained notes, and improve repeated-note separation
 - **v0.1.x:** evaluation against real recordings and accuracy improvements
 - **v0.2:** stronger note-boundary handling, pitch-bend/expression research, and better MIDI export
 - **v0.3:** C++/JUCE VST3 plugin
