@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 
 from .audio import load_audio, preprocess
 from .midi import export_midi
@@ -11,6 +12,23 @@ from .notes import (
     track_to_notes,
 )
 from .pitch import detect_pitch
+
+
+def write_report(path: str, notes) -> None:
+    """Write detected notes to a simple CSV for manual evaluation."""
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["midi_note", "start", "end", "duration", "velocity"])
+        for note in notes:
+            writer.writerow(
+                [
+                    note.midi_note,
+                    f"{note.start:.6f}",
+                    f"{note.end:.6f}",
+                    f"{note.duration:.6f}",
+                    note.velocity,
+                ]
+            )
 
 
 def main() -> None:
@@ -40,7 +58,11 @@ def main() -> None:
     parser.add_argument(
         "--no-onsets",
         action="store_true",
-        help="Disable onset detection for repeated notes at the same pitch",
+        help="Skip onset detection; pitch/energy segmentation remains active",
+    )
+    parser.add_argument(
+        "--report",
+        help="Optional CSV path for detailed note timing/velocity output",
     )
     args = parser.parse_args()
 
@@ -74,6 +96,9 @@ def main() -> None:
 
     export_midi(notes, args.output)
 
+    if args.report:
+        write_report(args.report, notes)
+
     print(f"Detected {len(notes)} notes")
     for note in notes:
         print(
@@ -83,6 +108,8 @@ def main() -> None:
             f"velocity {note.velocity:3d}"
         )
     print(f"Wrote MIDI: {args.output}")
+    if args.report:
+        print(f"Wrote report: {args.report}")
 
 
 if __name__ == "__main__":
