@@ -599,7 +599,13 @@ def _finish_note(
     midis: list[float],
     min_duration: float,
 ) -> None:
-    if end - start < min_duration or not midis:
+    # Floating-point frame timestamps can make an intended duration such as
+    # 0.02 seconds evaluate slightly below the configured minimum. Treat a
+    # tiny numerical error as equal to the minimum so short real notes are not
+    # silently discarded before articulation post-processing can inspect them.
+    duration = end - start
+    epsilon = 1e-6
+    if duration + epsilon < min_duration or not midis:
         return
     midi_note = int(np.clip(np.rint(np.median(midis)), 0, 127))
     notes.append(Note(midi_note=midi_note, start=start, end=end))
