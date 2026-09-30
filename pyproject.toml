@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio-to-instrument"
-version = "0.1.2"
+version = "0.1.3"
 description = "Monophonic audio-to-MIDI research prototype"
 requires-python = ">=3.10"
 dependencies = [
