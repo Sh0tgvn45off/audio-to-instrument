@@ -4,6 +4,7 @@ import argparse
 import csv
 
 from .audio import load_audio, preprocess
+from .articulation import detect_articulation_features
 from .midi import export_midi
 from .notes import (
     assign_velocities,
@@ -52,13 +53,13 @@ def main() -> None:
         "--energy-top-db",
         type=float,
         default=35.0,
-        help="Energy threshold below peak in dB for note-off detection (default: 35)",
+        help="Legacy energy-mask threshold in dB; articulation-aware mode uses continuous RMS evidence (default: 35)",
     )
     parser.add_argument(
         "--energy-release-frames",
         type=int,
         default=3,
-        help="Consecutive inactive energy frames required to confirm a release (default: 3)",
+        help="Consecutive low-energy frames required before release evidence is considered (default: 3)",
     )
     parser.add_argument(
         "--report",
@@ -75,16 +76,14 @@ def main() -> None:
         confidence_threshold=args.confidence,
     )
 
-    energy_times, energy_voiced = detect_energy_regions(
+    articulation = detect_articulation_features(
         samples,
         audio.sample_rate,
-        top_db=args.energy_top_db,
     )
 
     notes = track_to_notes(
         pitch,
-        energy_times=energy_times,
-        energy_voiced=energy_voiced,
+        articulation_features=articulation,
         min_duration=args.min_duration,
         energy_release_frames=args.energy_release_frames,
     )
