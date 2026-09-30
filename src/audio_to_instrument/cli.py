@@ -55,6 +55,12 @@ def main() -> None:
         help="Energy threshold below peak in dB for note-off detection (default: 35)",
     )
     parser.add_argument(
+        "--energy-release-frames",
+        type=int,
+        default=3,
+        help="Consecutive inactive energy frames required to confirm a release (default: 3)",
+    )
+    parser.add_argument(
         "--report",
         help="Optional CSV path for detailed note timing/velocity output",
     )
@@ -80,6 +86,7 @@ def main() -> None:
         energy_times=energy_times,
         energy_voiced=energy_voiced,
         min_duration=args.min_duration,
+        energy_release_frames=args.energy_release_frames,
     )
     notes = assign_velocities(notes, samples, audio.sample_rate)
 
