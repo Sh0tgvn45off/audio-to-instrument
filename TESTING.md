@@ -4,7 +4,9 @@
 
 The project is a **v0.1.x Python monophonic audio-to-MIDI research prototype**.
 
-The current development target is articulation-aware note segmentation. The analyzer is being validated locally before the project moves to the production C++/JUCE/VST3 implementation.
+The current development target is articulation-aware note segmentation.
+
+**Current milestone: `v0.1.3` | Phase: Articulation Hysteresis & Release Detection** The analyzer is being validated locally before the project moves to the production C++/JUCE/VST3 implementation.
 
 There is **no graphical UI yet**. Testing is done from the VS Code terminal.
 
@@ -85,6 +87,8 @@ The regression suite currently checks:
 - persistent pitch changes
 - onset detections not fragmenting sustained notes
 - repeated same-pitch notes separated by an energy gap
+- short energy dips not splitting sustained notes
+- confirmed energy releases ending notes after hysteresis
 - relative velocity estimation
 
 All tests must pass before considering a development change for merge.
@@ -138,7 +142,7 @@ Energy threshold:
 audio-to-midi input.wav output.mid --energy-top-db 35
 ```
 
-The current segmentation decisions are persistent pitch changes and energy gaps. Onset detection remains an isolated research utility and is not currently allowed to create MIDI note boundaries because that caused over-segmentation of sustained notes.
+The current segmentation decisions are persistent pitch changes and energy releases. Release confirmation uses consecutive inactive energy frames (`--energy-release-frames`) so brief envelope dips do not terminate sustained notes. Onset detection remains an isolated research utility and is not currently allowed to create MIDI note boundaries because that caused over-segmentation of sustained notes.
 
 ## Manual MIDI validation
 
@@ -193,8 +197,18 @@ Check whether louder notes generally produce higher MIDI velocities.
 - No graphical UI
 - Pitch bends and vibrato are not yet exported as continuous MIDI expression
 - Articulation detection is still experimental
+- Release hysteresis is currently frame-based and will need validation against more recordings
 - MIDI timing is frame-based and will not yet be sample-accurate
 - Python is the research/prototype engine, not the final DAW plugin implementation
+
+## Milestone gate: `v0.1.3` | Phase: Articulation Hysteresis & Release Detection
+
+Before this milestone is considered complete, verify that:
+
+1. Short energy dips do not split sustained notes.
+2. Genuine repeated-note gaps still produce separate MIDI notes.
+3. Release timing is audibly closer to the source than the previous single-frame energy decision.
+4. The existing pitch and onset regression protections remain intact.
 
 ## Merge gate
 
