@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import librosa
 import numpy as np
 
+from .articulation import ArticulationFeatures, sample_articulation_features
 from .pitch import PitchTrack
 
 
@@ -96,6 +97,11 @@ def track_to_notes(
     cents_tolerance: float = 80.0,
     change_frames: int = 3,
     energy_release_frames: int = 3,
+    articulation_features: ArticulationFeatures | None = None,
+    release_db: float = -50.0,
+    hard_release_db: float = -60.0,
+    release_confidence: float = 0.45,
+    hard_release_frames: int = 3,
 ) -> list[Note]:
     """Convert a monophonic pitch track into articulation-aware MIDI notes.
 
@@ -115,6 +121,12 @@ def track_to_notes(
         raise ValueError("min_duration cannot be negative")
     if energy_release_frames < 1:
         raise ValueError("energy_release_frames must be at least 1")
+    if hard_release_frames < 1:
+        raise ValueError("hard_release_frames must be at least 1")
+    if release_confidence < 0.0 or release_confidence > 1.0:
+        raise ValueError("release_confidence must be between 0 and 1")
+    if hard_release_db > release_db:
+        raise ValueError("hard_release_db must be at or below release_db")
 
     if len(track.times) == 0:
         return []
@@ -152,33 +164,52 @@ def track_to_notes(
     pending_start: float | None = None
     last_voiced_time: float | None = None
     inactive_energy_frames = 0
+    hard_inactive_frames = 0
     first_inactive_energy_time: float | None = None
 
-    for time, value, is_voiced in zip(
-        track.times, smoothed, track.voiced
+    use_articulation = articulation_features is not None
+
+    for time, value, is_voiced, confidence in zip(
+        track.times, smoothed, track.voiced, track.confidence
     ):
         time = float(time)
-        energy_active = _energy_is_active(
-            time, energy_times, energy_voiced
-        )
+        confidence = float(confidence)
 
-        if (
-            not is_voiced
-            or not np.isfinite(value)
-            or (len(energy_times) and not energy_active)
-        ):
+        if use_articulation:
+            rms_db, onset_strength = sample_articulation_features(
+                time, articulation_features
+            )
+            low_energy = rms_db <= release_db
+            hard_silence = rms_db <= hard_release_db
+            energy_active = not low_energy
+        else:
+            onset_strength = 0.0
+            energy_active = _energy_is_active(
+                time, energy_times, energy_voiced
+            )
+            low_energy = not energy_active
+            hard_silence = not energy_active
+
+        if not is_voiced or not np.isfinite(value):
             if active_start is not None and last_voiced_time is not None:
                 gap = time - last_voiced_time
-
-                if len(energy_times) and not energy_active:
+                if low_energy:
                     inactive_energy_frames += 1
+                    hard_inactive_frames += 1 if hard_silence else 0
                     if first_inactive_energy_time is None:
                         first_inactive_energy_time = time
-                    release_confirmed = (
-                        inactive_energy_frames >= energy_release_frames
-                    )
                 else:
-                    release_confirmed = False
+                    inactive_energy_frames = 0
+                    hard_inactive_frames = 0
+                    first_inactive_energy_time = None
+
+                release_confirmed = (
+                    inactive_energy_frames >= energy_release_frames
+                    and (
+                        confidence <= release_confidence
+                        or hard_inactive_frames >= hard_release_frames
+                    )
+                )
 
                 if gap > max_gap or release_confirmed:
                     end = (
@@ -187,7 +218,7 @@ def track_to_notes(
                         and first_inactive_energy_time is not None
                         else (
                             (last_voiced_time + time) / 2.0
-                            if not energy_active
+                            if low_energy
                             else last_voiced_time
                         )
                     )
@@ -203,11 +234,29 @@ def track_to_notes(
                     pending_midis = []
                     pending_start = None
                     inactive_energy_frames = 0
+                    hard_inactive_frames = 0
                     first_inactive_energy_time = None
             continue
 
-        inactive_energy_frames = 0
-        first_inactive_energy_time = None
+        if use_articulation:
+            if not low_energy:
+                inactive_energy_frames = 0
+                hard_inactive_frames = 0
+                first_inactive_energy_time = None
+            elif onset_strength >= 0.5 and confidence > release_confidence:
+                inactive_energy_frames = 0
+                hard_inactive_frames = 0
+                first_inactive_energy_time = None
+        else:
+            if not energy_active:
+                inactive_energy_frames += 1
+                if first_inactive_energy_time is None:
+                    first_inactive_energy_time = time
+                if inactive_energy_frames < energy_release_frames:
+                    continue
+            else:
+                inactive_energy_frames = 0
+                first_inactive_energy_time = None
 
         midi = float(value)
 
