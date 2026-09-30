@@ -441,11 +441,11 @@ def _consolidate_pitch_transitions(
 
             # A genuine articulation/release is evidence for a real note
             # boundary, so do not collapse this candidate.
-            if _has_release_near(
+            # Only inspect the actual transition interval. A release that
+            # occurs well before the transition can belong to the preceding
+            # note and must not classify an otherwise legato pitch transition.
+            if _has_release_in_interval(
                 middle.start,
-                features,
-                release_db=release_db,
-            ) or _has_release_near(
                 middle.end,
                 features,
                 release_db=release_db,
@@ -472,19 +472,17 @@ def _consolidate_pitch_transitions(
     return result
 
 
-def _has_release_near(
-    time: float,
+def _has_release_in_interval(
+    start: float,
+    end: float,
     features: ArticulationFeatures,
     *,
     release_db: float,
-    window: float = 0.06,
 ) -> bool:
-    """Return whether a meaningful low-energy release occurs near a boundary."""
-    if len(features.times) == 0:
+    """Return whether release evidence occurs inside a candidate transition."""
+    if len(features.times) == 0 or end <= start:
         return False
 
-    start = time - window
-    end = time + window
     mask = (features.times >= start) & (features.times <= end)
     if not np.any(mask):
         return False
