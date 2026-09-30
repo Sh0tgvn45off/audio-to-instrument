@@ -298,6 +298,23 @@ def track_to_notes(
                     first_inactive_energy_time = time
                 if inactive_energy_frames < energy_release_frames:
                     continue
+
+                if active_start is not None:
+                    _finish_note(
+                        notes,
+                        active_start,
+                        first_inactive_energy_time,
+                        active_midis,
+                        min_duration,
+                    )
+                    active_start = None
+                    active_midis = []
+                    pending_midis = []
+                    pending_start = None
+                    inactive_energy_frames = 0
+                    first_inactive_energy_time = None
+                    last_voiced_time = None
+                    continue
             else:
                 inactive_energy_frames = 0
                 first_inactive_energy_time = None
