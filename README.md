@@ -85,3 +85,10 @@ See [TESTING.md](TESTING.md) for the complete Windows/VS Code setup, automated t
 ## License
 
 See `LICENSE`.
+
+
+## Current development milestone
+
+**v0.1.4 | Articulation Classification & Note Boundary Scoring**
+
+This milestone adds articulation-aware segmentation for clean monophonic singing/humming. Continuous RMS energy, pYIN confidence, and spectral-flux onset evidence are combined so short energy dips do not automatically become note-offs. Onset evidence remains supporting evidence rather than a hard boundary.
