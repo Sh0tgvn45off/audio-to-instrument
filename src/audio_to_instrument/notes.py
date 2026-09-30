@@ -452,16 +452,16 @@ def _consolidate_pitch_transitions(
             ):
                 continue
 
-            boundary = (middle.start + middle.end) / 2.0
+            # Removing the transition region must not manufacture a gap.
             result[index - 1] = Note(
                 midi_note=previous.midi_note,
                 start=previous.start,
-                end=boundary,
+                end=following.start,
                 velocity=previous.velocity,
             )
             result[index + 1] = Note(
                 midi_note=following.midi_note,
-                start=boundary,
+                start=following.start,
                 end=following.end,
                 velocity=following.velocity,
             )
@@ -480,10 +480,14 @@ def _has_release_in_interval(
     release_db: float,
 ) -> bool:
     """Return whether release evidence occurs inside a candidate transition."""
-    if len(features.times) == 0 or end <= start:
+    if len(features.times) == 0 or end < start:
         return False
 
-    mask = (features.times >= start) & (features.times <= end)
+    epsilon = 1e-6
+    mask = (
+        (features.times >= start - epsilon)
+        & (features.times <= end + epsilon)
+    )
     if not np.any(mask):
         return False
 
