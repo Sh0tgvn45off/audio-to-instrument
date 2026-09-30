@@ -8,7 +8,6 @@ from .midi import export_midi
 from .notes import (
     assign_velocities,
     detect_energy_regions,
-    detect_onsets,
     track_to_notes,
 )
 from .pitch import detect_pitch
@@ -56,11 +55,6 @@ def main() -> None:
         help="Energy threshold below peak in dB for note-off detection (default: 35)",
     )
     parser.add_argument(
-        "--no-onsets",
-        action="store_true",
-        help="Skip onset detection; pitch/energy segmentation remains active",
-    )
-    parser.add_argument(
         "--report",
         help="Optional CSV path for detailed note timing/velocity output",
     )
@@ -75,10 +69,6 @@ def main() -> None:
         confidence_threshold=args.confidence,
     )
 
-    onset_times = None
-    if not args.no_onsets:
-        onset_times = detect_onsets(samples, audio.sample_rate)
-
     energy_times, energy_voiced = detect_energy_regions(
         samples,
         audio.sample_rate,
@@ -87,7 +77,6 @@ def main() -> None:
 
     notes = track_to_notes(
         pitch,
-        onset_times=onset_times,
         energy_times=energy_times,
         energy_voiced=energy_voiced,
         min_duration=args.min_duration,
