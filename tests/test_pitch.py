@@ -160,6 +160,58 @@ def test_articulation_requires_real_release_evidence():
     assert notes[0].midi_note == notes[1].midi_note == 60
     assert notes[1].start > notes[0].end
 
+def test_short_monotonic_pitch_transition_is_not_a_note():
+    track = _track(
+        [57.0, 57.0, 57.0, 57.0, 56.0, 55.0, 55.0, 55.0, 55.0],
+        step=0.02,
+    )
+    times = np.arange(9, dtype=np.float32) * 0.02
+    features = ArticulationFeatures(
+        times=times,
+        rms_db=np.full(9, -10.0, dtype=np.float32),
+        onset_strength=np.zeros(9, dtype=np.float32),
+    )
+
+    notes = track_to_notes(
+        track,
+        articulation_features=features,
+        min_duration=0.02,
+        change_frames=1,
+        transition_max_duration=0.04,
+        transition_min_neighbor_duration=0.05,
+    )
+
+    assert [note.midi_note for note in notes] == [57, 55]
+    assert notes[0].end == pytest.approx(notes[1].start)
+
+
+def test_short_pitch_transition_with_release_is_preserved():
+    track = _track(
+        [57.0, 57.0, 57.0, 56.0, 55.0, 55.0, 55.0],
+        step=0.02,
+    )
+    times = np.arange(7, dtype=np.float32) * 0.02
+    features = ArticulationFeatures(
+        times=times,
+        rms_db=np.array(
+            [-10.0, -10.0, -55.0, -10.0, -10.0, -10.0, -10.0],
+            dtype=np.float32,
+        ),
+        onset_strength=np.zeros(7, dtype=np.float32),
+    )
+
+    notes = track_to_notes(
+        track,
+        articulation_features=features,
+        min_duration=0.02,
+        change_frames=1,
+        transition_max_duration=0.04,
+        transition_min_neighbor_duration=0.04,
+    )
+
+    assert [note.midi_note for note in notes] == [57, 56, 55]
+
+
 def test_velocity_is_relative_to_attack_amplitude():
     samples = np.concatenate(
         [
