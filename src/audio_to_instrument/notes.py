@@ -95,12 +95,15 @@ def track_to_notes(
     max_gap: float = 0.06,
     cents_tolerance: float = 80.0,
     change_frames: int = 3,
+    energy_release_frames: int = 3,
 ) -> list[Note]:
     """Convert a monophonic pitch track into articulation-aware MIDI notes.
 
     Pitch determines note identity. Persistent pitch changes determine
     boundaries between different notes. Energy gaps determine note-off events
-    for repeated notes at the same pitch.
+    for repeated notes at the same pitch. Energy release uses hysteresis:
+    several consecutive inactive frames are required before a release is
+    confirmed, preventing brief envelope dips from splitting sustained notes.
 
     Onset detection is intentionally not used as a hard boundary because
     onset detectors can fire inside sustained notes due to consonants,
@@ -110,6 +113,8 @@ def track_to_notes(
         raise ValueError("change_frames must be at least 1")
     if min_duration < 0:
         raise ValueError("min_duration cannot be negative")
+    if energy_release_frames < 1:
+        raise ValueError("energy_release_frames must be at least 1")
 
     if len(track.times) == 0:
         return []
@@ -146,6 +151,8 @@ def track_to_notes(
     pending_midis: list[float] = []
     pending_start: float | None = None
     last_voiced_time: float | None = None
+    inactive_energy_frames = 0
+    first_inactive_energy_time: float | None = None
 
     for time, value, is_voiced in zip(
         track.times, smoothed, track.voiced
@@ -162,13 +169,27 @@ def track_to_notes(
         ):
             if active_start is not None and last_voiced_time is not None:
                 gap = time - last_voiced_time
-                if gap > max_gap or (
-                    len(energy_times) and not energy_active and gap > 0.02
-                ):
+
+                if len(energy_times) and not energy_active:
+                    inactive_energy_frames += 1
+                    if first_inactive_energy_time is None:
+                        first_inactive_energy_time = time
+                    release_confirmed = (
+                        inactive_energy_frames >= energy_release_frames
+                    )
+                else:
+                    release_confirmed = False
+
+                if gap > max_gap or release_confirmed:
                     end = (
-                        (last_voiced_time + time) / 2.0
-                        if not energy_active
-                        else last_voiced_time
+                        first_inactive_energy_time
+                        if release_confirmed
+                        and first_inactive_energy_time is not None
+                        else (
+                            (last_voiced_time + time) / 2.0
+                            if not energy_active
+                            else last_voiced_time
+                        )
                     )
                     _finish_note(
                         notes,
@@ -181,7 +202,12 @@ def track_to_notes(
                     active_midis = []
                     pending_midis = []
                     pending_start = None
+                    inactive_energy_frames = 0
+                    first_inactive_energy_time = None
             continue
+
+        inactive_energy_frames = 0
+        first_inactive_energy_time = None
 
         midi = float(value)
 
