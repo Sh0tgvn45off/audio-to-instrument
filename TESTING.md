@@ -138,13 +138,7 @@ Energy threshold:
 audio-to-midi input.wav output.mid --energy-top-db 35
 ```
 
-Disable onset detection for comparison:
-
-```powershell
-audio-to-midi input.wav output.mid --no-onsets
-```
-
-Onsets are currently treated as attack evidence rather than hard note boundaries. The important segmentation decisions are persistent pitch changes and energy gaps.
+The current segmentation decisions are persistent pitch changes and energy gaps. Onset detection remains an isolated research utility and is not currently allowed to create MIDI note boundaries because that caused over-segmentation of sustained notes.
 
 ## Manual MIDI validation
 
