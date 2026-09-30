@@ -106,14 +106,19 @@ def track_to_notes(
     """Convert a monophonic pitch track into articulation-aware MIDI notes.
 
     Pitch determines note identity. Persistent pitch changes determine
-    boundaries between different notes. Energy gaps determine note-off events
-    for repeated notes at the same pitch. Energy release uses hysteresis:
-    several consecutive inactive frames are required before a release is
-    confirmed, preventing brief envelope dips from splitting sustained notes.
+    boundaries between different notes. With articulation features supplied,
+    RMS level, pYIN confidence, and spectral-flux onset evidence jointly
+    determine whether a release is real. A short energy dip is not enough to
+    end a note.
 
-    Onset detection is intentionally not used as a hard boundary because
-    onset detectors can fire inside sustained notes due to consonants,
-    harmonics, vibrato, or other transients.
+    The legacy energy-mask path remains available for deterministic tests and
+    backwards compatibility. Production callers should provide
+    ``articulation_features`` so energy is treated as evidence rather than a
+    hard voiced/silent switch.
+
+    Onset detection is supporting evidence only. It is never a hard boundary
+    because singing onsets can be soft and spectral transients can occur
+    inside sustained notes.
     """
     if change_frames < 1:
         raise ValueError("change_frames must be at least 1")
@@ -239,11 +244,50 @@ def track_to_notes(
             continue
 
         if use_articulation:
-            if not low_energy:
-                inactive_energy_frames = 0
-                hard_inactive_frames = 0
-                first_inactive_energy_time = None
-            elif onset_strength >= 0.5 and confidence > release_confidence:
+            if low_energy:
+                inactive_energy_frames += 1
+                hard_inactive_frames += 1 if hard_silence else 0
+                if first_inactive_energy_time is None:
+                    first_inactive_energy_time = time
+
+                # A strong recovery/attack while confidence remains healthy
+                # cancels a possible release. This protects sustained humming
+                # from short envelope dips and transient spectral changes.
+                if onset_strength >= 0.5 and confidence > release_confidence:
+                    inactive_energy_frames = 0
+                    hard_inactive_frames = 0
+                    first_inactive_energy_time = None
+                else:
+                    release_confirmed = (
+                        inactive_energy_frames >= energy_release_frames
+                        and (
+                            confidence <= release_confidence
+                            or hard_inactive_frames >= hard_release_frames
+                        )
+                    )
+                    if release_confirmed and active_start is not None:
+                        end = (
+                            first_inactive_energy_time
+                            if first_inactive_energy_time is not None
+                            else time
+                        )
+                        _finish_note(
+                            notes,
+                            active_start,
+                            end,
+                            active_midis,
+                            min_duration,
+                        )
+                        active_start = None
+                        active_midis = []
+                        pending_midis = []
+                        pending_start = None
+                        inactive_energy_frames = 0
+                        hard_inactive_frames = 0
+                        first_inactive_energy_time = None
+                        last_voiced_time = None
+                        continue
+            else:
                 inactive_energy_frames = 0
                 hard_inactive_frames = 0
                 first_inactive_energy_time = None
