@@ -102,6 +102,8 @@ def track_to_notes(
     hard_release_db: float = -60.0,
     release_confidence: float = 0.45,
     hard_release_frames: int = 3,
+    transition_max_duration: float = 0.10,
+    transition_min_neighbor_duration: float = 0.10,
 ) -> list[Note]:
     """Convert a monophonic pitch track into articulation-aware MIDI notes.
 
@@ -132,6 +134,10 @@ def track_to_notes(
         raise ValueError("release_confidence must be between 0 and 1")
     if hard_release_db > release_db:
         raise ValueError("hard_release_db must be at or below release_db")
+    if transition_max_duration <= 0:
+        raise ValueError("transition_max_duration must be positive")
+    if transition_min_neighbor_duration < 0:
+        raise ValueError("transition_min_neighbor_duration cannot be negative")
 
     if len(track.times) == 0:
         return []
@@ -368,7 +374,122 @@ def track_to_notes(
             min_duration,
         )
 
+    if use_articulation:
+        notes = _consolidate_pitch_transitions(
+            notes,
+            articulation_features,
+            max_duration=transition_max_duration,
+            min_neighbor_duration=transition_min_neighbor_duration,
+            release_db=release_db,
+        )
+
     return notes
+
+
+def _consolidate_pitch_transitions(
+    notes: list[Note],
+    features: ArticulationFeatures,
+    *,
+    max_duration: float,
+    min_neighbor_duration: float,
+    release_db: float,
+) -> list[Note]:
+    """Remove short legato transition regions mistaken for musical notes.
+
+    Singing F0 often passes through intermediate pitches during a transition.
+    Research on singing transcription treats these regions as transitions
+    rather than independent notes, using pitch-trajectory stability and
+    explicit transition modeling. We therefore suppress a short middle note
+    when its pitch lies between two stable neighboring notes and there is no
+    release evidence at either boundary.
+
+    Energy/release evidence is deliberately required to be absent before a
+    transition is collapsed. This protects genuine short articulated notes.
+    """
+    if len(notes) < 3 or len(features.times) == 0:
+        return notes
+
+    result = list(notes)
+    changed = True
+
+    while changed and len(result) >= 3:
+        changed = False
+
+        for index in range(1, len(result) - 1):
+            previous = result[index - 1]
+            middle = result[index]
+            following = result[index + 1]
+
+            if middle.duration > max_duration:
+                continue
+            if previous.duration < min_neighbor_duration:
+                continue
+            if following.duration < min_neighbor_duration:
+                continue
+
+            previous_pitch = previous.midi_note
+            middle_pitch = middle.midi_note
+            following_pitch = following.midi_note
+
+            # The short region must sit between the neighboring pitches.
+            if previous_pitch == following_pitch:
+                continue
+            low = min(previous_pitch, following_pitch)
+            high = max(previous_pitch, following_pitch)
+            if not low < middle_pitch < high:
+                continue
+
+            # A genuine articulation/release is evidence for a real note
+            # boundary, so do not collapse this candidate.
+            if _has_release_near(
+                middle.start,
+                features,
+                release_db=release_db,
+            ) or _has_release_near(
+                middle.end,
+                features,
+                release_db=release_db,
+            ):
+                continue
+
+            boundary = (middle.start + middle.end) / 2.0
+            result[index - 1] = Note(
+                midi_note=previous.midi_note,
+                start=previous.start,
+                end=boundary,
+                velocity=previous.velocity,
+            )
+            result[index + 1] = Note(
+                midi_note=following.midi_note,
+                start=boundary,
+                end=following.end,
+                velocity=following.velocity,
+            )
+            del result[index]
+            changed = True
+            break
+
+    return result
+
+
+def _has_release_near(
+    time: float,
+    features: ArticulationFeatures,
+    *,
+    release_db: float,
+    window: float = 0.06,
+) -> bool:
+    """Return whether a meaningful low-energy release occurs near a boundary."""
+    if len(features.times) == 0:
+        return False
+
+    start = time - window
+    end = time + window
+    mask = (features.times >= start) & (features.times <= end)
+    if not np.any(mask):
+        return False
+
+    return bool(np.any(features.rms_db[mask] <= release_db))
 
 
 def assign_velocities(
