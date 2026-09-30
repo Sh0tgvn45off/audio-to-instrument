@@ -18,7 +18,6 @@ Audio
 → pYIN fundamental-frequency detection
 → confidence filtering
 → pitch smoothing
-→ onset detection as attack evidence
 → energy-aware note segmentation
 → persistent pitch-change detection
 → MIDI note conversion
@@ -57,7 +56,6 @@ Useful options:
     audio-to-midi input.wav output.mid --min-duration 0.08
     audio-to-midi input.wav output.mid --energy-top-db 35
     audio-to-midi input.wav output.mid --report notes.csv
-    audio-to-midi input.wav output.mid --no-onsets
 
 The command prints detected MIDI note, start/end time, duration, and estimated velocity. The optional CSV report makes manual transcription analysis easier.
 
