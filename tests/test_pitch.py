@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import mido
 
+from audio_to_instrument.articulation import ArticulationFeatures
 from audio_to_instrument.midi import export_midi
 from audio_to_instrument.notes import (
     Note,
@@ -110,6 +111,50 @@ def test_sustained_energy_release_ends_note_after_hysteresis():
         min_duration=0.05,
         max_gap=0.20,
         energy_release_frames=3,
+    )
+    assert len(notes) == 2
+    assert notes[0].midi_note == notes[1].midi_note == 60
+    assert notes[1].start > notes[0].end
+
+
+def test_articulation_energy_dip_does_not_split_sustained_note():
+    track = _track([60.0] * 8)
+    times = np.arange(8, dtype=np.float32) * 0.05
+    features = ArticulationFeatures(
+        times=times,
+        rms_db=np.array(
+            [-10.0, -10.0, -55.0, -10.0, -10.0, -10.0, -10.0, -10.0],
+            dtype=np.float32,
+        ),
+        onset_strength=np.zeros(8, dtype=np.float32),
+    )
+    notes = track_to_notes(
+        track,
+        articulation_features=features,
+        min_duration=0.05,
+        energy_release_frames=3,
+    )
+    assert len(notes) == 1
+    assert notes[0].midi_note == 60
+
+
+def test_articulation_requires_real_release_evidence():
+    track = _track([60.0] * 9)
+    times = np.arange(9, dtype=np.float32) * 0.05
+    features = ArticulationFeatures(
+        times=times,
+        rms_db=np.array(
+            [-10.0, -10.0, -70.0, -70.0, -70.0, -10.0, -10.0, -10.0, -10.0],
+            dtype=np.float32,
+        ),
+        onset_strength=np.zeros(9, dtype=np.float32),
+    )
+    notes = track_to_notes(
+        track,
+        articulation_features=features,
+        min_duration=0.05,
+        energy_release_frames=3,
+        hard_release_frames=3,
     )
     assert len(notes) == 2
     assert notes[0].midi_note == notes[1].midi_note == 60
