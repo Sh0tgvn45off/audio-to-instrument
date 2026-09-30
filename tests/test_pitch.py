@@ -122,3 +122,15 @@ def test_midi_uses_note_velocity_and_closes_before_new_pitch(tmp_path):
     assert messages[2].type == "note_on"
     assert messages[2].note == 64
     assert messages[2].velocity == 110
+
+
+def test_preprocess_preserves_timeline_by_default():
+    from audio_to_instrument.audio import preprocess
+
+    samples = np.zeros(1000, dtype=np.float32)
+    samples[200:800] = 0.5
+    result = preprocess(samples)
+
+    assert len(result) == len(samples)
+    assert np.argmax(result) == np.argmax(samples)
+    assert result[200] == pytest.approx(1.0)
