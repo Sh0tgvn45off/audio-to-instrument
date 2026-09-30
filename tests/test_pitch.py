@@ -78,6 +78,43 @@ def test_same_pitch_notes_can_remain_separate_with_energy_gap():
     assert notes[1].start > notes[0].end
 
 
+
+def test_short_energy_dip_does_not_split_sustained_note():
+    track = _track([60.0] * 8)
+    energy_times = np.arange(8, dtype=np.float32) * 0.05
+    energy_voiced = np.array(
+        [True, True, False, True, True, True, True, True]
+    )
+    notes = track_to_notes(
+        track,
+        energy_times=energy_times,
+        energy_voiced=energy_voiced,
+        min_duration=0.05,
+        max_gap=0.20,
+        energy_release_frames=2,
+    )
+    assert len(notes) == 1
+    assert notes[0].midi_note == 60
+
+
+def test_sustained_energy_release_ends_note_after_hysteresis():
+    track = _track([60.0] * 8)
+    energy_times = np.arange(8, dtype=np.float32) * 0.05
+    energy_voiced = np.array(
+        [True, True, False, False, False, True, True, True]
+    )
+    notes = track_to_notes(
+        track,
+        energy_times=energy_times,
+        energy_voiced=energy_voiced,
+        min_duration=0.05,
+        max_gap=0.20,
+        energy_release_frames=3,
+    )
+    assert len(notes) == 2
+    assert notes[0].midi_note == notes[1].midi_note == 60
+    assert notes[1].start > notes[0].end
+
 def test_velocity_is_relative_to_attack_amplitude():
     samples = np.concatenate(
         [
