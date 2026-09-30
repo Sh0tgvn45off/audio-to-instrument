@@ -98,13 +98,13 @@ def test_velocity_is_relative_to_attack_amplitude():
     assert result[1].velocity > result[0].velocity
 
 
-def test_midi_uses_note_velocity_and_closes_before_new_pitch():
+def test_midi_uses_note_velocity_and_closes_before_new_pitch(tmp_path):
     notes = [
         Note(60, 0.0, 0.5, velocity=70),
         Note(64, 0.5, 1.0, velocity=110),
     ]
-    output = "test_velocity_and_order.mid"
-    export_midi(notes, output)
+    output = tmp_path / "test_velocity_and_order.mid"
+    export_midi(notes, str(output))
 
     midi = mido.MidiFile(output)
     messages = [
