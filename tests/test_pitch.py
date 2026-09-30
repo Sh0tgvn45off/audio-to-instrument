@@ -194,7 +194,7 @@ def test_short_pitch_transition_with_release_is_preserved():
     features = ArticulationFeatures(
         times=times,
         rms_db=np.array(
-            [-10.0, -10.0, -55.0, -10.0, -10.0, -10.0, -10.0],
+            [-10.0, -10.0, -10.0, -10.0, -55.0, -10.0, -10.0],
             dtype=np.float32,
         ),
         onset_strength=np.zeros(7, dtype=np.float32),
