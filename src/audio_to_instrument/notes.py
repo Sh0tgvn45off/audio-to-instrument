@@ -375,7 +375,11 @@ def track_to_notes(
         )
 
     if use_articulation:
-        notes = _consolidate_pitch_transitions(
+        # Keep transition consolidation in its own module so the segmentation
+        # logic and post-processing logic can be tested independently.
+        from .transitions import consolidate_pitch_transitions
+
+        notes = consolidate_pitch_transitions(
             notes,
             articulation_features,
             max_duration=transition_max_duration,
@@ -384,122 +388,6 @@ def track_to_notes(
         )
 
     return notes
-
-
-def _consolidate_pitch_transitions(
-    notes: list[Note],
-    features: ArticulationFeatures,
-    *,
-    max_duration: float,
-    min_neighbor_duration: float,
-    release_db: float,
-) -> list[Note]:
-    """Collapse short intermediate pitch regions that behave like legato
-    transitions rather than independently articulated musical notes.
-
-    A candidate middle note is removed only when:
-    - it is short,
-    - both neighboring notes are sufficiently stable,
-    - its pitch lies strictly between the neighboring pitches, and
-    - there is no release evidence at either side of the candidate.
-
-    The surrounding notes are then joined at the original transition
-    boundaries, so removing a transition cannot create an artificial gap.
-    """
-    if len(notes) < 3 or len(features.times) == 0:
-        return notes
-
-    result = list(notes)
-
-    changed = True
-    while changed and len(result) >= 3:
-        changed = False
-
-        for index in range(1, len(result) - 1):
-            previous = result[index - 1]
-            middle = result[index]
-            following = result[index + 1]
-
-            if middle.duration > max_duration:
-                continue
-            if previous.duration < min_neighbor_duration:
-                continue
-            if following.duration < min_neighbor_duration:
-                continue
-
-            previous_pitch = previous.midi_note
-            middle_pitch = middle.midi_note
-            following_pitch = following.midi_note
-
-            if previous_pitch == following_pitch:
-                continue
-
-            low = min(previous_pitch, following_pitch)
-            high = max(previous_pitch, following_pitch)
-            if not low < middle_pitch < high:
-                continue
-
-            boundary_window = min(
-                max_duration,
-                max(features.times[1] - features.times[0], 0.01)
-                if len(features.times) > 1
-                else 0.01,
-            )
-
-            if _has_release_in_interval(
-                middle.start - boundary_window,
-                middle.start + boundary_window,
-                features,
-                release_db=release_db,
-            ):
-                continue
-
-            if _has_release_in_interval(
-                middle.end - boundary_window,
-                middle.end + boundary_window,
-                features,
-                release_db=release_db,
-            ):
-                continue
-
-            result[index - 1] = Note(
-                midi_note=previous.midi_note,
-                start=previous.start,
-                end=following.start,
-                velocity=previous.velocity,
-            )
-            result[index + 1] = Note(
-                midi_note=following.midi_note,
-                start=following.start,
-                end=following.end,
-                velocity=following.velocity,
-            )
-
-            del result[index]
-            changed = True
-            break
-
-    return result
-def _has_release_in_interval(
-    start: float,
-    end: float,
-    features: ArticulationFeatures,
-    *,
-    release_db: float,
-) -> bool:
-    """Return whether release evidence occurs inside a candidate transition."""
-    if len(features.times) == 0 or end < start:
-        return False
-
-    epsilon = 1e-6
-    mask = (
-        (features.times >= start - epsilon)
-        & (features.times <= end + epsilon)
-    )
-    if not np.any(mask):
-        return False
-
-    return bool(np.any(features.rms_db[mask] <= release_db))
 
 
 def assign_velocities(
